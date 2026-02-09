@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+ENV/
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Datasets / generated data
+data/
+!data/**/*.csv
+
+# Training artifacts (keep CSV; ignore checkpoints/weights)
+checkpoint/
+checkpoints/
+runs/
+wandb/
+
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.tar
+*.tar.gz
+
+# Logs
+*.log
+*.out
+
+# Images / figures
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.svg
+*.webp
+
+# Docs build outputs
+*.pdf
+*.html
+
