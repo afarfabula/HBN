@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import re
 
@@ -30,6 +31,45 @@ def _resolve_ckpt_path(path_or_run_dir: str) -> str:
     if best is None:
         raise FileNotFoundError("No hbn_stage*_ckpt.pth found under: {}".format(p))
     return best
+
+
+def _load_stage_epsilons(run_dir_or_ckpt_path: str):
+    p = os.path.abspath(os.path.expanduser(run_dir_or_ckpt_path))
+    metrics_dir = p if os.path.isdir(p) else os.path.dirname(p)
+    metrics_path = os.path.join(metrics_dir, "metrics.csv")
+    if not os.path.isfile(metrics_path):
+        return {}
+
+    out = {}
+    with open(metrics_path, "r", newline="") as fp:
+        reader = csv.DictReader(fp)
+        for row in reader:
+            split = (row.get("split") or "").strip()
+            if "stage_done" not in split:
+                continue
+
+            stage = (row.get("stage") or "").strip()
+            if stage:
+                try:
+                    stage_i = int(float(stage))
+                except Exception:
+                    continue
+            else:
+                m = re.search(r"(\d+)$", split)
+                if not m:
+                    continue
+                stage_i = int(m.group(1))
+
+            eps_s = (row.get("epsilon") or "").strip()
+            if not eps_s:
+                continue
+            try:
+                eps_v = float(eps_s)
+            except Exception:
+                continue
+            out[stage_i] = eps_v
+
+    return out
 
 
 def _infer_num_stages_from_state_dict(state_dict) -> int:
@@ -86,6 +126,7 @@ def _eval_stage_acc(model: HBNMerger, loader, num_stages: int, device: str, max_
     model.eval()
     correct = [0 for _ in range(num_stages)]
     total = 0
+
     for batch_idx, batch in enumerate(loader):
         if len(batch) == 3:
             inputs, targets, _ = batch
@@ -101,8 +142,44 @@ def _eval_stage_acc(model: HBNMerger, loader, num_stages: int, device: str, max_
         for i in range(num_stages):
             preds = torch.argmax(logits_list[i], dim=1)
             correct[i] += int(preds.eq(targets).sum().item())
-        total += int(targets.size(0))
 
+        total += int(targets.size(0))
+        if max_batches and (batch_idx + 1) >= max_batches:
+            break
+
+    return [100.0 * c / total if total else 0.0 for c in correct]
+
+
+@torch.no_grad()
+def _eval_prefix_ens_acc(model: HBNMerger, loader, num_stages: int, device: str, max_batches: int = 0):
+    model.eval()
+    correct = [0 for _ in range(num_stages)]
+    total = 0
+
+    for batch_idx, batch in enumerate(loader):
+        if len(batch) == 3:
+            inputs, targets, _ = batch
+        else:
+            inputs, targets = batch
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+
+        _, logits_list = model(inputs)
+        if len(logits_list) != num_stages:
+            raise ValueError("Model returned {} stage logits, expected {}".format(len(logits_list), num_stages))
+
+        merged = None
+        for i in range(num_stages):
+            if getattr(model, "force_unit_head_weight", False):
+                ww = torch.ones((), device=logits_list[i].device, dtype=logits_list[i].dtype)
+            else:
+                w = model.head_list[i].classifyheadweight
+                ww = w.to(device=logits_list[i].device, dtype=logits_list[i].dtype)
+            merged = logits_list[i] * ww if merged is None else merged + logits_list[i] * ww
+            preds = torch.argmax(merged, dim=1)
+            correct[i] += int(preds.eq(targets).sum().item())
+
+        total += int(targets.size(0))
         if max_batches and (batch_idx + 1) >= max_batches:
             break
 
@@ -176,8 +253,12 @@ def main():
     _load_state_dict_compat(model, state_dict)
 
     num_stages = len(model.head_list)
+    stage_eps = _load_stage_epsilons(args.run_dir)
+    stage_w = [float(model.head_list[i].classifyheadweight.detach().cpu().item()) for i in range(num_stages)]
+
     train_accs = _eval_stage_acc(model, trainloader, num_stages=num_stages, device=device, max_batches=args.max_batches)
     test_accs = _eval_stage_acc(model, testloader, num_stages=num_stages, device=device, max_batches=args.max_batches)
+    test_ens_accs = _eval_prefix_ens_acc(model, testloader, num_stages=num_stages, device=device, max_batches=args.max_batches)
 
     print("ckpt:", ckpt_path)
     print("device:", device)
@@ -185,9 +266,24 @@ def main():
     print("basemodel:", args.basemodel)
     print("stages:", num_stages)
     print("")
-    print("{:>5s}  {:>10s}  {:>10s}".format("stage", "train_acc", "test_acc"))
+    print(
+        "{:>5s}  {:>10s}  {:>12s}  {:>10s}  {:>10s}  {:>10s}".format(
+            "stage", "alpha", "epsilon", "train_acc", "test_acc", "test_ens"
+        )
+    )
     for s in range(1, num_stages + 1):
-        print("{:>5d}  {:>10.3f}  {:>10.3f}".format(s, float(train_accs[s - 1]), float(test_accs[s - 1])))
+        eps_v = stage_eps.get(s, None)
+        eps_str = "NA" if eps_v is None else "{:.6f}".format(float(eps_v))
+        print(
+            "{:>5d}  {:>10.6f}  {:>12s}  {:>10.3f}  {:>10.3f}  {:>10.3f}".format(
+                s,
+                float(stage_w[s - 1]),
+                eps_str,
+                float(train_accs[s - 1]),
+                float(test_accs[s - 1]),
+                float(test_ens_accs[s - 1]),
+            )
+        )
 
 
 if __name__ == "__main__":

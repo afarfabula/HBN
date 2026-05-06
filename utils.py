@@ -53,6 +53,16 @@ last_time = time.time()
 begin_time = last_time
 def progress_bar(current, total, msg=None):
     global last_time, begin_time
+    if os.environ.get('NO_PROGRESS_BAR', ''):
+        if current == 0:
+            begin_time = time.time()
+            last_time = begin_time
+        else:
+            last_time = time.time()
+        if current >= total - 1 and msg:
+            sys.stdout.write(str(msg) + '\n')
+            sys.stdout.flush()
+        return
     if current == 0:
         begin_time = time.time()  # Reset for new bar.
 

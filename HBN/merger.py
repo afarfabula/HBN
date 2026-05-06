@@ -36,7 +36,39 @@ class HBNMerger(nn.Module):
         self.adapter_list = nn.ModuleList(list(adapter_list))
         self.head_list = nn.ModuleList(list(head_list))
         self.intermediate_feature_shape_list = [tuple(int(x) for x in s) for s in intermediate_feature_shape_list]
+        self.force_unit_head_weight = False
         self.output_shape = self._infer_output_shapes_and_validate()
+
+    def _head_weight(self, head, logits: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "force_unit_head_weight", False):
+            return torch.ones((), dtype=logits.dtype, device=logits.device)
+        w = head.classifyheadweight
+        if not torch.is_tensor(w) or w.numel() != 1:
+            raise ValueError('head_list classifyheadweight must be scalar Tensor/Parameter')
+        return w.to(dtype=logits.dtype, device=logits.device)
+
+    def _collect_head_weights(self, upto, dtype, device, normalize_head_weights: bool):
+        ws = []
+        for i in range(int(upto)):
+            head = self.head_list[i]
+            if getattr(self, "force_unit_head_weight", False):
+                w = torch.ones((), dtype=dtype, device=device)
+            else:
+                w = head.classifyheadweight
+                if not torch.is_tensor(w) or w.numel() != 1:
+                    raise ValueError('head_list classifyheadweight must be scalar Tensor/Parameter')
+                w = w.to(dtype=dtype, device=device)
+            ws.append(w)
+        if (not normalize_head_weights) or (not ws):
+            return ws
+        wv = torch.stack([w.reshape(()) for w in ws])
+        wv = torch.clamp(wv, min=0)
+        denom = torch.sum(wv)
+        if float(denom.detach().cpu().item()) == 0.0:
+            wv = torch.ones_like(wv) / float(int(wv.numel()))
+        else:
+            wv = wv / denom
+        return [wv[i] for i in range(int(wv.numel()))]
     #检查submodule是否首尾衔接起来
     def _infer_output_shapes_and_validate(self):
         x0_shape = self.intermediate_feature_shape_list[0]
@@ -104,7 +136,7 @@ class HBNMerger(nn.Module):
                 raise ValueError('head_list[{}].classifyheadweight must be scalar Tensor/Parameter'.format(i))
             logits = head(out)
             logits_list.append(logits)
-            ww = w.to(dtype=logits.dtype, device=logits.device)
+            ww = self._head_weight(head, logits)
             merged_logits = logits * ww if merged_logits is None else merged_logits + logits * ww
 
         return merged_logits, logits_list
@@ -126,9 +158,10 @@ class HBNMerger(nn.Module):
                     intermediate_feature_shape_list=shapes,
                 )
             )
+            sub_mergers[-1].force_unit_head_weight = getattr(self, "force_unit_head_weight", False)
         return sub_mergers
 
-    def forward_merged_logits(self, x, upto_stage):
+    def forward_merged_logits(self, x, upto_stage, normalize_head_weights: bool = False):
         upto = int(upto_stage)
         if upto < 0 or upto > len(self.modules_list):
             raise ValueError('upto_stage out of range')
@@ -137,14 +170,14 @@ class HBNMerger(nn.Module):
 
         out = x
         merged_logits = None
+        weights = self._collect_head_weights(upto, dtype=x.dtype, device=x.device, normalize_head_weights=bool(normalize_head_weights))
         for i in range(upto):
             out = self.modules_list[i](out)
             if i < len(self.adapter_list):
                 out = self.adapter_list[i](out)
             head = self.head_list[i]
-            w = head.classifyheadweight
             logits = head(out)
-            ww = w.to(dtype=logits.dtype, device=logits.device)
+            ww = weights[i]
             merged_logits = logits * ww if merged_logits is None else merged_logits + logits * ww
         return merged_logits
 

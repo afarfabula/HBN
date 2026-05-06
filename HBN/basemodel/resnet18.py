@@ -25,6 +25,34 @@ class _StemLayer1(nn.Module):
         return out
 
 
+class _StemOnly(nn.Module):
+    def __init__(self, conv1, bn1):
+        super(_StemOnly, self).__init__()
+        self.conv1 = conv1
+        self.bn1 = bn1
+
+    def forward(self, x):
+        return F.relu(self.bn1(self.conv1(x)))
+
+
+class _FeatureAdapter(nn.Module):
+    def __init__(self, channels):
+        super(_FeatureAdapter, self).__init__()
+        c = int(channels)
+        self.conv1 = nn.Conv2d(c, c, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(c)
+        self.conv2 = nn.Conv2d(c, c, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(c)
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out, inplace=True)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        return F.relu(x + out, inplace=True)
+
+
 class _StemLayer12(nn.Module):
     def __init__(self, conv1, bn1, layer1, layer2):
         super(_StemLayer12, self).__init__()
@@ -102,6 +130,75 @@ class ResNet18Split(nn.Module):
 
     def get_submodules(self):
         return [self.stage1, self.stage2, self.stage3, self.stage4]
+
+    def forward(self, x):
+        out = x
+        for m in self.get_submodules():
+            out = m(out)
+        return out
+
+
+class ResNet18SMHLSplit(nn.Module):
+    def __init__(self, num_classes=100):
+        super(ResNet18SMHLSplit, self).__init__()
+        self.num_classes = int(num_classes)
+        self.input_shape = (3, 32, 32)
+        self.in_planes = 64
+
+        conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        bn1 = nn.BatchNorm2d(64)
+        self.stage0 = _StemOnly(conv1, bn1)
+        self.stage1 = self._make_layer(BasicBlock, 64, 2, stride=1)
+        self.stage2 = self._make_layer(BasicBlock, 128, 2, stride=2)
+        self.stage3 = self._make_layer(BasicBlock, 256, 2, stride=2)
+        self.stage4 = self._make_layer(BasicBlock, 512, 2, stride=2)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(block(self.in_planes, planes, s))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def get_submodules(self):
+        return [self.stage0, self.stage1, self.stage2, self.stage3, self.stage4]
+
+    def forward(self, x):
+        out = x
+        for m in self.get_submodules():
+            out = m(out)
+        return out
+
+
+class OriginalResnet5Split(nn.Module):
+    def __init__(self, num_classes=100):
+        super(OriginalResnet5Split, self).__init__()
+        self.num_classes = int(num_classes)
+        self.input_shape = (3, 32, 32)
+        self.in_planes = 64
+
+        conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        bn1 = nn.BatchNorm2d(64)
+        self.stage0 = _StemOnly(conv1, bn1)
+        self.stage1 = self._make_layer(BasicBlock, 64, 2, stride=1)
+        self.stage2 = self._make_layer(BasicBlock, 128, 2, stride=2)
+        self.stage3 = self._make_layer(BasicBlock, 256, 2, stride=2)
+        self.stage4 = nn.Sequential(
+            self._make_layer(BasicBlock, 512, 2, stride=2),
+            _FeatureAdapter(512),
+        )
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(block(self.in_planes, planes, s))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def get_submodules(self):
+        return [self.stage0, self.stage1, self.stage2, self.stage3, self.stage4]
 
     def forward(self, x):
         out = x

@@ -20,6 +20,40 @@ python main.py --resume --lr=0.01
 python -m HBN.boost_train --dataset cifar100 --basemodel resnet18 --stage-epochs 50,50,50,50
 ```
 
+### HBN basemodel 扩展（backbone）
+`--basemodel` 现在支持更多 CIFAR 常用 backbone（大多来自本仓库 `models/`，ConvNeXt/ViT 为 CIFAR 适配实现），并提供两类用法：
+
+- split 版本：固定 4 个 stage（你需要提供 4 个 `--stage-epochs`）
+  - `preactresnet18`
+  - `resnext29_32x4d`
+  - `regnetx_200mf`
+  - `regnety_400mf`
+  - `efficientnetb0`
+  - `densenet121`
+  - `convnext_tiny_cifar`
+  - `vit_tiny_cifar`
+- original* 版本：第 1 个 stage 是完整 backbone feature extractor，后面追加 `--empty-stage-num` 个 identity stage（用于 stage-wise boosting；你需要提供 `1 + empty_stage_num` 个 `--stage-epochs`）
+  - `originalpreactresnet18`
+  - `originalresnext29_32x4d`
+  - `originalregnetx_200mf`
+  - `originalregnety_400mf`
+  - `originalefficientnetb0`
+  - `originaldensenet121`
+  - `originalconvnexttinycifar`
+  - `originalvittinycifar`
+
+示例（保持你现有命令结构不变，只替换 basemodel）：
+```
+NO_PROGRESS_BAR=1 nohup python3 -u -m HBN.boost_train \
+  --dataset cifar100 \
+  --data-dir ./data \
+  --basemodel originalregnety_400mf \
+  --empty-stage-num 16 \
+  --batch-size 512 \
+  --stage-epochs 100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100 \
+  > ./run.log 2>&1 &
+```
+
 ## Accuracy
 | Model             | Acc.        |
 | ----------------- | ----------- |

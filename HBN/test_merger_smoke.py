@@ -33,6 +33,13 @@ def main():
     assert isinstance(logits_list, list) and len(logits_list) == len(modules)
     assert tuple(logits_list[0].shape) == (4, num_classes)
 
+    merger.force_unit_head_weight = True
+    for i, h in enumerate(merger.head_list):
+        with torch.no_grad():
+            h.classifyheadweight.fill_(0.0 if i == 0 else 2.0)
+    merged2, _ = merger(x)
+    assert torch.allclose(merged2, logits_list[0] + logits_list[1] + logits_list[2], atol=1e-5)
+
     class BadAdapter(nn.Module):
         def forward(self, x):
             return x[:, :, :16, :16]
